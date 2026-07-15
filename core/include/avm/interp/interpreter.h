@@ -17,9 +17,19 @@
 
 namespace avm {
 
+// 실행 모드 설정.
+struct ExecConfig {
+    // false: 하니스 모드 — SVC/미정의/중단에서 실행을 정지하고 StopInfo로
+    //        보고한다 (단위 테스트, 디버깅, 검증 모드).
+    // true : 아키텍처 모드 — 동기 예외를 VBAR_EL1 벡터로 전달한다
+    //        (펌웨어/운영체제 실행의 기본값).
+    bool guest_vectors = false;
+};
+
 class Interpreter {
 public:
-    Interpreter(CpuState& cpu, PhysMem& mem) : cpu_(cpu), mem_(mem) {}
+    Interpreter(CpuState& cpu, PhysMem& mem, ExecConfig config = {})
+        : cpu_(cpu), mem_(mem), config_(config) {}
 
     // 명령어 1개 실행. 계속 실행 가능하면 reason == kNone.
     StopInfo Step();
@@ -32,6 +42,12 @@ public:
 private:
     StopInfo Execute(const DecodedInst& inst, GuestAddr pc);
 
+    // 동기 예외 발생 지점 공통 처리:
+    // guest_vectors면 VBAR 벡터로 진입하고 kNone(계속 실행)을 반환,
+    // 아니면 stop_reason으로 정지한다.
+    StopInfo RaiseSync(ExceptionClass ec, u32 iss, u64 far, u64 preferred_return,
+                       StopReason stop_reason, u64 pc, u32 raw);
+
     // NZCV를 갱신하는 덧셈 (SUB는 ~y, carry=1로 호출).
     u64 AddWithCarry(u64 x, u64 y, bool carry_in, bool is64, bool set_flags);
     u64 ApplyShift(u64 value, ShiftType type, unsigned amount, bool is64) const;
@@ -39,6 +55,7 @@ private:
 
     CpuState& cpu_;
     PhysMem& mem_;
+    ExecConfig config_;
 };
 
 } // namespace avm

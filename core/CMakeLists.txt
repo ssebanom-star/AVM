@@ -14,9 +14,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(avm_core STATIC
     src/log.cpp
+    src/cpu/exception.cpp
+    src/cpu/sysreg.cpp
     src/mem/phys_mem.cpp
     src/decode/decoder.cpp
     src/interp/interpreter.cpp
+    src/dev/pl011.cpp
+    src/vm/virt_board.cpp
     src/selftest.cpp
 )
 
@@ -40,6 +44,10 @@ if(NOT ANDROID)
         tests/decoder_test.cpp
         tests/interpreter_test.cpp
         tests/phys_mem_test.cpp
+        tests/exception_test.cpp
+        tests/sysreg_test.cpp
+        tests/pl011_test.cpp
+        tests/virt_board_test.cpp
     )
     target_link_libraries(avm_tests PRIVATE avm_core)
     target_include_directories(avm_tests PRIVATE tests)

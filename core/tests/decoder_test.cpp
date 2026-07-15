@@ -175,8 +175,45 @@ TEST(Decoder_System) {
     CHECK_EQ(inst.sys_imm16, 0x1234);
 
     CHECK(Decode(Nop()).op == Op::kNop);
-    // WFI(0xD503207F)는 HINT 공간: 현재는 아키텍처 NOP 동작으로 디코딩.
-    CHECK(Decode(0xD503207Fu).op == Op::kNop);
+    // WFI는 실제 대기 의미를 가지므로 전용 op.
+    CHECK(Decode(Wfi()).op == Op::kWfi);
+    // WFE/YIELD/미할당 힌트는 아키텍처 NOP 동작.
+    CHECK(Decode(Wfe()).op == Op::kNop);
+    CHECK(Decode(Yield()).op == Op::kNop);
+    // 배리어.
+    CHECK(Decode(DsbSy()).op == Op::kBarrier);
+    CHECK(Decode(DmbSy()).op == Op::kBarrier);
+    CHECK(Decode(Isb()).op == Op::kBarrier);
+    // ERET.
+    CHECK(Decode(Eret()).op == Op::kEret);
+    CHECK_EQ(Eret(), 0xD69F03E0u); // 알려진 인코딩
+}
+
+TEST(Decoder_SysRegAccess) {
+    // 알려진 기계어와 교차 검증: mrs x0, midr_el1 / msr vbar_el1, x0
+    CHECK_EQ(Mrs(0, sysreg::kMidrEl1), 0xD5380000u);
+    CHECK_EQ(Msr(sysreg::kVbarEl1, 0), 0xD518C000u);
+    CHECK_EQ(Mrs(0, sysreg::kCurrentEl), 0xD5384240u);
+    CHECK_EQ(MsrDaifSet(2), 0xD50342DFu); // msr daifset, #2
+
+    DecodedInst inst = Decode(Mrs(7, sysreg::kEsrEl1));
+    CHECK(inst.op == Op::kMrs);
+    CHECK_EQ(inst.rt, 7);
+    CHECK_EQ(inst.sysreg, sysreg::kEsrEl1);
+
+    inst = Decode(Msr(sysreg::kVbarEl1, 3));
+    CHECK(inst.op == Op::kMsrReg);
+    CHECK_EQ(inst.rt, 3);
+    CHECK_EQ(inst.sysreg, sysreg::kVbarEl1);
+
+    inst = Decode(MsrSpsel(1));
+    CHECK(inst.op == Op::kMsrImm);
+    CHECK(inst.pstate_field == PStateField::kSpSel);
+    CHECK_EQ(inst.imm, 1ull);
+
+    inst = Decode(MsrDaifClr(0xF));
+    CHECK(inst.pstate_field == PStateField::kDaifClr);
+    CHECK_EQ(inst.imm, 0xFull);
 }
 
 TEST(Decoder_UndefinedIsNotIgnored) {
@@ -185,8 +222,10 @@ TEST(Decoder_UndefinedIsNotIgnored) {
     CHECK(Decode(0xFFFFFFFFu).op == Op::kUndefined);
     CHECK(Decode(0x9B037C41u).op == Op::kUndefined); // madd (후속 단계)
     CHECK(Decode(0xA9BF7BFDu).op == Op::kUndefined); // stp (후속 단계)
-    CHECK(Decode(0xD5384240u).op == Op::kUndefined); // mrs (Stage 3)
     CHECK(Decode(0xD65F0FFFu).op == Op::kUndefined); // ret 인코딩 변형(불법)
+    CHECK(Decode(0xD69F03E1u).op == Op::kUndefined); // eret 변형(불법)
+    // SYS(캐시/TLB 관리, op0=01)는 Stage 3: tlbi vmalle1 = 0xD508871F
+    CHECK(Decode(0xD508871Fu).op == Op::kUndefined);
 }
 
 TEST(Decoder_BitmaskImmediates) {

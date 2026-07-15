@@ -63,6 +63,7 @@ struct SystemRegisters {
 
     // 메모리 시스템 제어 (Stage 3 MMU에서 사용).
     u64 sctlr_el1 = 0x00C5'0838;       // MMU off 리셋 값 근사
+    u64 cpacr_el1 = 0;
     u64 ttbr0_el1 = 0;
     u64 ttbr1_el1 = 0;
     u64 tcr_el1   = 0;

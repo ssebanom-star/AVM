@@ -53,6 +53,19 @@ enum class Op : u16 {
 
     // 시스템.
     kSvc,
+    kMrs,      // MRS Xt, <sysreg>
+    kMsrReg,   // MSR <sysreg>, Xt
+    kMsrImm,   // MSR SPSel/DAIFSet/DAIFClr, #imm4
+    kEret,
+    kWfi,
+    kBarrier,  // DSB/DMB/ISB — 단일 vCPU 인터프리터에서는 no-op 의미
+};
+
+// MSR (immediate)의 PSTATE 필드.
+enum class PStateField : u8 {
+    kSpSel,
+    kDaifSet,
+    kDaifClr,
 };
 
 // 시프트 종류 (shifted register 형식).
@@ -95,6 +108,8 @@ struct DecodedInst {
 
     // 시스템.
     u16 sys_imm16 = 0;       // SVC #imm16
+    u16 sysreg = 0;          // MRS/MSR: 패킹된 시스템 레지스터 ID (sysreg.h 참조)
+    PStateField pstate_field = PStateField::kSpSel; // MSR immediate
 };
 
 // 단일 명령어 디코딩. 실패 시 op == Op::kUndefined.

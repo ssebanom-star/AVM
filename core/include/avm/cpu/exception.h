@@ -12,12 +12,14 @@ namespace avm {
 
 // ARMv8 ESR.EC (Exception Class) 중 현재 단계에서 사용하는 값.
 enum class ExceptionClass : u32 {
-    kUnknown          = 0x00, // 미정의 명령어 등
-    kSvc64            = 0x15, // AArch64 SVC
-    kInstructionAbort = 0x21, // 명령어 인출 중단 (동일 EL)
-    kDataAbort        = 0x25, // 데이터 접근 중단 (동일 EL)
-    kPcAlignment      = 0x22,
-    kSpAlignment      = 0x26,
+    kUnknown               = 0x00, // 미정의 명령어 등
+    kSvc64                 = 0x15, // AArch64 SVC
+    kInstructionAbortLower = 0x20, // 명령어 인출 중단 (EL0 -> EL1)
+    kInstructionAbort      = 0x21, // 명령어 인출 중단 (동일 EL)
+    kDataAbortLower        = 0x24, // 데이터 접근 중단 (EL0 -> EL1)
+    kDataAbort             = 0x25, // 데이터 접근 중단 (동일 EL)
+    kPcAlignment           = 0x22,
+    kSpAlignment           = 0x26,
 };
 
 // 메모리 접근 실패 종류.
@@ -61,5 +63,31 @@ struct StopInfo {
     u16 svc_imm = 0;     // reason == kSvc일 때 SVC #imm16
     MemFault fault;      // 메모리 관련 정지의 상세
 };
+
+// ---------------------------------------------------------------------------
+// AArch64 예외 진입/복귀 (Stage 2)
+// ---------------------------------------------------------------------------
+
+struct CpuState;
+
+// 현재 PSTATE를 SPSR 형식으로 인코딩 (NZCV[31:28], DAIF[9:6], M[4:0]).
+u64 BuildSpsr(const CpuState& cpu);
+
+// SPSR을 PSTATE에 적용 (ERET 경로). AArch64 EL0t/EL1t/EL1h만 유효.
+// 유효하지 않은 모드면 false (불법 예외 복귀).
+bool ApplySpsr(CpuState& cpu, u64 spsr);
+
+// ESR 값 구성: EC[31:26], IL(bit25, A64는 항상 1), ISS[24:0].
+constexpr u64 BuildEsr(ExceptionClass ec, u32 iss) {
+    return (static_cast<u64>(ec) << 26) | (1ull << 25) | (iss & 0x01FF'FFFF);
+}
+
+// EL1으로의 동기 예외 진입.
+// - SPSR_EL1/ELR_EL1/ESR_EL1/FAR_EL1 기록
+// - PSTATE: EL1h 전환, DAIF 마스크
+// - PC = VBAR_EL1 + 벡터 오프셋 (발생 EL/SP 선택에 따라 0x000/0x200/0x400)
+// preferred_return: 폴트 명령어(재시도) 또는 다음 명령어(SVC).
+void TakeSyncException(CpuState& cpu, ExceptionClass ec, u32 iss, u64 far,
+                       u64 preferred_return);
 
 } // namespace avm

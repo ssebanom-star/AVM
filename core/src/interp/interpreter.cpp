@@ -1,5 +1,6 @@
 #include "avm/interp/interpreter.h"
 
+#include "avm/cpu/sysreg.h"
 #include "avm/log.h"
 
 namespace avm {
@@ -95,15 +96,31 @@ bool Interpreter::ConditionHolds(u8 cond) const {
     return result;
 }
 
+StopInfo Interpreter::RaiseSync(ExceptionClass ec, u32 iss, u64 far,
+                                u64 preferred_return, StopReason stop_reason,
+                                u64 pc, u32 raw) {
+    if (config_.guest_vectors) {
+        TakeSyncException(cpu_, ec, iss, far, preferred_return);
+        return MakeStop(StopReason::kNone, pc, raw);
+    }
+    return MakeStop(stop_reason, pc, raw);
+}
+
 StopInfo Interpreter::Step() {
     const GuestAddr pc = cpu_.pc;
     if ((pc & 0x3) != 0) {
         AVM_LOGD(kTag, "PC 정렬 위반: 0x%llx", (unsigned long long)pc);
-        return MakeStop(StopReason::kPcMisaligned, pc, 0);
+        return RaiseSync(ExceptionClass::kPcAlignment, 0, pc, pc,
+                         StopReason::kPcMisaligned, pc, 0);
     }
     u32 raw = 0;
     if (MemFault fault = mem_.FetchU32(pc, raw)) {
-        StopInfo info = MakeStop(StopReason::kInstAbort, pc, 0);
+        const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
+        const auto ec = from_el0 ? ExceptionClass::kInstructionAbortLower
+                                 : ExceptionClass::kInstructionAbort;
+        // IFSC = 0b010000: 동기 외부 중단 (MMU 도입 전의 물리 접근 실패).
+        StopInfo info = RaiseSync(ec, 0b010000, pc, pc,
+                                  StopReason::kInstAbort, pc, 0);
         info.fault = fault;
         return info;
     }
@@ -133,7 +150,8 @@ StopInfo Interpreter::Execute(const DecodedInst& inst, GuestAddr pc) {
         case Op::kUndefined: {
             AVM_LOGD(kTag, "미정의 명령어 0x%08x @ 0x%llx", inst.raw,
                      (unsigned long long)pc);
-            return MakeStop(StopReason::kUndefinedInst, pc, inst.raw);
+            return RaiseSync(ExceptionClass::kUnknown, 0, cpu_.sys.far_el1, pc,
+                             StopReason::kUndefinedInst, pc, inst.raw);
         }
 
         case Op::kNop:
@@ -252,7 +270,13 @@ StopInfo Interpreter::Execute(const DecodedInst& inst, GuestAddr pc) {
                 fault = mem_.Write(addr, &value, size);
             }
             if (fault) {
-                StopInfo info = MakeStop(StopReason::kDataAbort, pc, inst.raw);
+                const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
+                const auto ec = from_el0 ? ExceptionClass::kDataAbortLower
+                                         : ExceptionClass::kDataAbort;
+                // ISS: WnR(bit6) | DFSC=0b010000 (동기 외부 중단 — MMU 이전).
+                const u32 iss = (fault.is_write ? 1u << 6 : 0) | 0b010000;
+                StopInfo info = RaiseSync(ec, iss, fault.addr, pc,
+                                          StopReason::kDataAbort, pc, inst.raw);
                 info.fault = fault;
                 return info;
             }
@@ -297,15 +321,95 @@ StopInfo Interpreter::Execute(const DecodedInst& inst, GuestAddr pc) {
 
         // --- 시스템 ------------------------------------------------------------
         case Op::kSvc: {
-            // Stage 1: SVC는 실행 루프 정지 이벤트다. PC는 SVC 다음 명령을
-            // 가리키게 하여(ELR 의미) Stage 2에서 벡터 진입으로 자연스럽게
-            // 확장되도록 한다.
-            cpu_.pc = pc + 4;
             cpu_.executed_instructions++;
+            if (config_.guest_vectors) {
+                // 아키텍처 경로: EL1 벡터로 진입. ELR = 다음 명령.
+                TakeSyncException(cpu_, ExceptionClass::kSvc64,
+                                  inst.sys_imm16, 0, pc + 4);
+                return MakeStop(StopReason::kNone, pc, inst.raw);
+            }
+            // 하니스 모드: 정지 이벤트 (PC는 ELR 의미로 다음 명령).
+            cpu_.pc = pc + 4;
             StopInfo info = MakeStop(StopReason::kSvc, pc, inst.raw);
             info.svc_imm = inst.sys_imm16;
             return info;
         }
+
+        case Op::kMrs: {
+            u64 value = 0;
+            if (!sysreg::Read(cpu_, inst.sysreg, value)) {
+                AVM_LOGD(kTag, "MRS 미구현/불허 sysreg=0x%04x @ 0x%llx",
+                         inst.sysreg, (unsigned long long)pc);
+                return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                                 StopReason::kUndefinedInst, pc, inst.raw);
+            }
+            cpu_.SetXZr(inst.rt, value);
+            break;
+        }
+        case Op::kMsrReg: {
+            if (!sysreg::Write(cpu_, inst.sysreg, cpu_.XZr(inst.rt))) {
+                AVM_LOGD(kTag, "MSR 미구현/불허 sysreg=0x%04x @ 0x%llx",
+                         inst.sysreg, (unsigned long long)pc);
+                return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                                 StopReason::kUndefinedInst, pc, inst.raw);
+            }
+            break;
+        }
+        case Op::kMsrImm: {
+            const u64 imm = inst.imm; // CRm 4비트
+            switch (inst.pstate_field) {
+                case PStateField::kSpSel:
+                    // EL0에서 SPSel 변경은 UNDEFINED.
+                    if (cpu_.pstate.el == ExceptionLevel::EL0) {
+                        return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                                         StopReason::kUndefinedInst, pc,
+                                         inst.raw);
+                    }
+                    cpu_.pstate.sp_sel = imm & 1;
+                    break;
+                case PStateField::kDaifSet:
+                    if (imm & 0b1000) cpu_.pstate.d = true;
+                    if (imm & 0b0100) cpu_.pstate.a = true;
+                    if (imm & 0b0010) cpu_.pstate.i = true;
+                    if (imm & 0b0001) cpu_.pstate.f = true;
+                    break;
+                case PStateField::kDaifClr:
+                    if (imm & 0b1000) cpu_.pstate.d = false;
+                    if (imm & 0b0100) cpu_.pstate.a = false;
+                    if (imm & 0b0010) cpu_.pstate.i = false;
+                    if (imm & 0b0001) cpu_.pstate.f = false;
+                    break;
+            }
+            break;
+        }
+        case Op::kEret: {
+            // EL0에서 ERET은 UNDEFINED.
+            if (cpu_.pstate.el == ExceptionLevel::EL0) {
+                return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                                 StopReason::kUndefinedInst, pc, inst.raw);
+            }
+            const u64 spsr = cpu_.sys.spsr_el1;
+            const u64 elr = cpu_.sys.elr_el1;
+            if (!ApplySpsr(cpu_, spsr)) {
+                // 불법 예외 복귀 (AArch32/불법 모드/상위 EL 복귀 시도).
+                AVM_LOGE(kTag, "불법 ERET: SPSR=0x%llx @ 0x%llx",
+                         (unsigned long long)spsr, (unsigned long long)pc);
+                return MakeStop(StopReason::kInternalError, pc, inst.raw);
+            }
+            next_pc = elr;
+            break;
+        }
+        case Op::kWfi: {
+            // 대기할 인터럽트 소스가 아직 없으므로(GIC는 Stage 5) 정지
+            // 이벤트로 보고한다. PC는 WFI 다음 명령 — 재개 시 그 지점부터.
+            cpu_.pc = pc + 4;
+            cpu_.executed_instructions++;
+            cpu_.wfi_pending = true;
+            return MakeStop(StopReason::kWfi, pc, inst.raw);
+        }
+        case Op::kBarrier:
+            // 단일 vCPU 인터프리터: 프로그램 순서 실행이므로 no-op 의미.
+            break;
     }
 
     cpu_.pc = next_pc;

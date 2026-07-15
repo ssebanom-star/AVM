@@ -8,6 +8,8 @@
 #include "avm/asm/assembler.h"
 #include "avm/board.h"
 #include "avm/interp/interpreter.h"
+#include "avm/vm/test_firmware.h"
+#include "avm/vm/virt_board.h"
 
 namespace avm {
 
@@ -236,6 +238,23 @@ void TestPreciseFaults(Reporter& r) {
     }
 }
 
+void TestFirmwareBoot(Reporter& r) {
+    r.Printf("[8] 최소 펌웨어 부팅 (플래시 리셋 -> UART -> SVC 예외 -> ERET -> WFI)");
+    VirtBoard board;
+    r.Check(board.ok(), "보드 구성 (플래시+RAM+UART)");
+    const std::vector<u8> firmware = testfw::BuildTestFirmware();
+    r.Check(board.LoadFirmware(firmware.data(), firmware.size()), "펌웨어 적재");
+
+    const StopInfo stop = board.Run(100000);
+    r.Check(stop.reason == StopReason::kWfi, "WFI로 정상 종료");
+    r.Check(board.Uart().TxLog() == testfw::kExpectedUartOutput,
+            "UART 출력 = \"AVM:!OK\\n\"");
+    r.CheckEq<u64>(board.Cpu().x[10] >> 26, 0x15ull, "핸들러가 읽은 ESR.EC = SVC");
+    r.CheckEq<u64>(board.Cpu().x[10] & 0xFFFF, testfw::kSvcNumber,
+                   "ESR.ISS = SVC #imm");
+    r.Printf("  UART: %s", board.Uart().TxLog().c_str());
+}
+
 void TestSelfModifyingCodeTracking(Reporter& r) {
     r.Printf("[7] 코드 페이지 수정 추적 (JIT 무효화 기반)");
     TestVm vm({Nop(), Svc(0)});
@@ -252,7 +271,7 @@ void TestSelfModifyingCodeTracking(Reporter& r) {
 
 SelfTestResult RunCpuSelfTest() {
     Reporter r;
-    r.Printf("AVM Stage 1 CPU 셀프테스트");
+    r.Printf("AVM Stage 2 엔진 셀프테스트");
     r.Printf("게스트: AArch64 @ avm-virt 보드 (RAM 0x%llx)",
              (unsigned long long)board::kRamBase);
     r.Printf("----------------------------------------");
@@ -264,6 +283,7 @@ SelfTestResult RunCpuSelfTest() {
     TestConditionFlags(r);
     TestPreciseFaults(r);
     TestSelfModifyingCodeTracking(r);
+    TestFirmwareBoot(r);
 
     r.Printf("----------------------------------------");
     r.Printf("결과: %d 통과, %d 실패", r.passed(), r.failed());

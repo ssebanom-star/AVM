@@ -86,19 +86,19 @@ Generic Timer: PPI 14(EL1 phys), 11(EL1 virt), CNTFRQ = 62.5 MHz.
 | 모듈 | 경로 | 역할 | 단계 |
 |------|------|------|------|
 | types/log/board | `include/avm/*.h` | 기본 타입, 로깅, 보드 메모리 맵 | 1 |
-| cpu | `include/avm/cpu/` | `CpuState`(레지스터/PSTATE/시스템 레지스터), 예외 모델 | 1~3 |
+| cpu | `include/avm/cpu/` | `CpuState`, 예외 진입/복귀, 시스템 레지스터 파일 | 1~3 |
 | mem | `include/avm/mem/`, `src/mem/` | `PhysMem`: RAM/ROM/MMIO, 페이지 메타데이터, 호스트 포인터 빠른 경로 | 1 |
 | decode | `include/avm/decode/`, `src/decode/` | ARM64 디코더 (인터프리터/JIT 공용) | 1~ |
 | interp | `include/avm/interp/`, `src/interp/` | 참조 인터프리터 (검증/폴백/디버깅) | 1 |
 | asm | `include/avm/asm/` | 테스트용 인코딩 빌더 (프로덕션 JIT emitter와 별개) | 1 |
 | selftest | `src/selftest.cpp` | 게스트 바이너리 셀프테스트 (JNI/CLI 공용) | 1 |
-| mmu | (Stage 3) | Stage 1 주소 변환, 소프트웨어 TLB, MSR/MRS 트랩 | 3 |
+| dev | `include/avm/dev/`, `src/dev/` | PL011 UART (이후: RTC, VirtIO, 플래시) | 2~10 |
+| vm | `include/avm/vm/`, `src/vm/` | VirtBoard 조립, 테스트 펌웨어 (이후: vCPU 스레드, 수명주기) | 2~9 |
+| mmu | (Stage 3) | Stage 1 주소 변환, 소프트웨어 TLB, 캐시/TLB 관리 명령 | 3 |
 | ir / jit | (Stage 4) | 저수준 IR, ARM64 코드 생성기, 코드 캐시, 블록 연결, W^X 관리 | 4 |
-| irq / timer | (Stage 5) | GICv3(Distributor/Redistributor/CPU IF), Generic Timer | 5 |
-| dev | (Stage 2~) | PL011, RTC, VirtIO Block/GPU/Input/Net, 플래시 | 2~10 |
+| irq / timer | (Stage 5) | GICv3(Distributor/Redistributor/CPU IF), Generic Timer IRQ | 5 |
 | block | (Stage 6) | RAW/QCOW2 v3/ISO9660 블록 백엔드, 비동기 I/O 큐 | 6 |
 | fw | (Stage 5~6) | DTB 생성, EDK II AArch64 펌웨어 이미지 적재/NVRAM | 5~6 |
-| vm | (Stage 7~9) | VM 조립(보드 구성), vCPU 스레드, 수명주기, 통계 | 7~9 |
 
 의존 방향: `vm → (jit|interp) → decode → cpu → types`, `vm → dev → mem`.
 역방향 의존 금지. JIT와 인터프리터는 동일한 `CpuState`/`PhysMem`/디코더를 공유한다
@@ -194,8 +194,8 @@ AVM/
 
 | 단계 | 내용 | 상태 |
 |------|------|------|
-| 1 | CPU 인터프리터 + 물리 메모리 + 단위 테스트 | **완료 (이 커밋)** |
-| 2 | 최소 가상 보드: UART(PL011), 예외 벡터 진입, 테스트 펌웨어 | 다음 |
+| 1 | CPU 인터프리터 + 물리 메모리 + 단위 테스트 | **완료** |
+| 2 | 최소 가상 보드: UART(PL011), 예외 벡터 진입, MSR/MRS, 테스트 펌웨어 | **완료** |
 | 3 | MMU: MSR/MRS, Stage 1 변환, 소프트웨어 TLB, 폴트 | |
 | 4 | JIT: IR, ARM64 emitter, 코드 캐시, 블록 연결, 검증 모드 | |
 | 5 | GICv3 + Generic Timer + DTB 생성 + UEFI UART 부팅 | |

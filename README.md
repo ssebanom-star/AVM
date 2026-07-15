@@ -11,9 +11,9 @@ AVM은 Android ARM64 기기에서 **현대적인 ARM64 운영체제(Linux, 이�
 - 실행 방식: EL2/KVM 없이 동작하는 **ARM64→ARM64 동적 바이너리 변환** + 소프트웨어 MMU
 - 전체 설계: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-## 현재 상태: Stage 1 / 11 (CPU 인터프리터)
+## 현재 상태: Stage 2 / 11 (최소 가상 보드)
 
-구현 완료:
+**Stage 1 — CPU 인터프리터:**
 
 - vCPU 아키텍처 상태(X0–X30, SP_ELx, PC, PSTATE/NZCV, EL, 시스템 레지스터, V0–V31 저장 공간)
 - 게스트 물리 주소 공간: RAM/ROM/MMIO 영역, 4KB 페이지 메타데이터(R/W/X, dirty,
@@ -23,9 +23,23 @@ AVM은 Android ARM64 기기에서 **현대적인 ARM64 운영체제(Linux, 이�
   LDR/STR(B/H/W/X, unsigned/pre/post-index), B, BL, B.cond, BR, BLR, RET, CBZ, CBNZ, SVC
 - 미지원 명령어는 NOP로 무시하지 않고 **정확한 미정의 명령어 정지**로 처리
 - 정밀 폴트 보고 (미매핑/권한/폴트 주소/폴트 PC)
-- 호스트 단위 테스트 38개 + 게스트 바이너리 셀프테스트(검증 32항목)
-- Android 앱 (Jetpack Compose): 네이티브 엔진에서 게스트 ARM64 테스트 바이너리를
-  실행하고 결과를 표시하는 개발 콘솔
+
+**Stage 2 — 최소 가상 보드 (avm-virt):**
+
+- AArch64 예외 모델: VBAR_EL1 벡터 진입(EL1t/EL1h/EL0 오프셋), ESR/FAR/ELR/SPSR
+  기록, DAIF 마스킹, ERET 복귀, 불법 복귀 검사 — SVC/미정의/데이터·명령어 중단이
+  실제 게스트 예외 핸들러로 전달됨
+- 시스템 명령: MRS/MSR(레지스터·immediate), WFI, DSB/DMB/ISB, ERET
+- 시스템 레지스터 파일: MIDR/MPIDR/CurrentEL, SCTLR/TTBRx/TCR/MAIR, VBAR/ESR/FAR/
+  ELR/SPSR/SP_EL0, NZCV/DAIF/SPSel, TPIDRx, Generic Timer(CNTFRQ/CNTPCT/CNTVCT/
+  CTL/CVAL/TVAL) — EL0 권한 트랩 포함
+- PL011 UART: TX 콘솔 로그, RX FIFO 주입, FR/RIS/IMSC/MIS, IRQ 레벨 콜백(GIC 연결
+  준비), PeriphID/CellID
+- VirtBoard: 플래시 ROM(리셋 벡터 0x0) + RAM + UART 조립, 직접 조립한 최소 테스트
+  펌웨어가 **플래시에서 부팅해 UART 배너 출력 → SVC 예외 → ERET 복귀 → WFI**까지 실행
+- 호스트 단위 테스트 71개 + 게스트 바이너리 셀프테스트(검증 38항목)
+- Android 앱 (Jetpack Compose): 네이티브 엔진에서 게스트 ARM64 테스트 바이너리와
+  펌웨어 부팅을 실행하고 결과를 표시하는 개발 콘솔
 
 ## 빌드
 

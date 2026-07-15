@@ -1,5 +1,7 @@
 #include "avm/decode/decoder.h"
 
+#include "avm/cpu/sysreg.h"
+
 namespace avm {
 
 namespace {
@@ -237,7 +239,11 @@ DecodedInst DecodeUncondBranchReg(u32 raw) {
         case 0b0000: inst.op = Op::kBr; break;
         case 0b0001: inst.op = Op::kBlr; break;
         case 0b0010: inst.op = Op::kRet; break;
-        default:     return Undefined(raw); // ERET/DRPS는 후속 단계
+        case 0b0100: // ERET: Rn 필드가 11111로 고정
+            if (inst.rn != 31) return Undefined(raw);
+            inst.op = Op::kEret;
+            break;
+        default:     return Undefined(raw); // DRPS 등은 후속 단계
     }
     return inst;
 }
@@ -258,17 +264,68 @@ DecodedInst DecodeExceptionGen(u32 raw) {
 }
 
 DecodedInst DecodeSystem(u32 raw) {
-    // HINT 공간: NOP/YIELD/WFE/WFI/SEV/SEVL 및 미할당 힌트.
-    // 아키텍처상 미할당 HINT는 NOP처럼 동작해야 하므로 kNop으로 디코딩한다.
-    // (이는 "미지원 명령어를 NOP로 무시"하는 것이 아니라 아키텍처 정의를
-    //  따르는 것이다. WFI/WFE의 실제 대기 의미는 Stage 5에서 부여된다.)
-    if ((raw & 0xFFFFF01F) == 0xD503201F) {
-        DecodedInst inst;
-        inst.raw = raw;
-        inst.op = Op::kNop;
+    // System 공간: 1101 0101 00 L op0 op1 CRn CRm op2 Rt
+    DecodedInst inst;
+    inst.raw = raw;
+    const u32 l = Bits32(raw, 21, 21);
+    const u32 op1 = Bits32(raw, 18, 16);
+    const u32 crn = Bits32(raw, 15, 12);
+    const u32 crm = Bits32(raw, 11, 8);
+    const u32 op2 = Bits32(raw, 7, 5);
+    const u32 rt = Bits32(raw, 4, 0);
+
+    if (Bits32(raw, 20, 20) == 1) {
+        // MRS / MSR (register): op0 = 2 + bit19.
+        const unsigned op0 = 2 + Bits32(raw, 19, 19);
+        inst.op = l ? Op::kMrs : Op::kMsrReg;
+        inst.sysreg = sysreg::Id(op0, op1, crn, crm, op2);
+        inst.rt = static_cast<u8>(rt);
         return inst;
     }
-    return Undefined(raw); // MSR/MRS/배리어/캐시 관리는 Stage 3
+    if (l != 0) return Undefined(raw);
+
+    switch (crn) {
+        case 0b0010:
+            // HINT 공간. WFI는 실제 대기 의미를 가지므로 별도 디코딩.
+            // 그 외(NOP/YIELD/WFE/SEV/SEVL/미할당 힌트)는 아키텍처 정의에
+            // 따라 NOP 동작이다 ("미지원 무시"가 아니라 아키텍처 준수).
+            if (rt != 0b11111) return Undefined(raw);
+            if (op1 == 0b011 && crm == 0 && op2 == 0b011) {
+                inst.op = Op::kWfi;
+            } else {
+                inst.op = Op::kNop;
+            }
+            return inst;
+        case 0b0011:
+            // 배리어: DSB(op2=100), DMB(101), ISB(110).
+            // 단일 vCPU 인터프리터에서는 순서 제약이 자동 충족되므로 no-op
+            // 의미로 실행한다. 멀티 vCPU(Stage 11)에서 실제 의미가 부여된다.
+            if (rt != 0b11111 || op1 != 0b011) return Undefined(raw);
+            if (op2 == 0b100 || op2 == 0b101 || op2 == 0b110) {
+                inst.op = Op::kBarrier;
+                return inst;
+            }
+            return Undefined(raw);
+        case 0b0100:
+            // MSR (immediate): PSTATE 필드 조작. CRm = imm4.
+            if (rt != 0b11111) return Undefined(raw);
+            if (op1 == 0b000 && op2 == 0b101) {
+                inst.op = Op::kMsrImm;
+                inst.pstate_field = PStateField::kSpSel;
+            } else if (op1 == 0b011 && op2 == 0b110) {
+                inst.op = Op::kMsrImm;
+                inst.pstate_field = PStateField::kDaifSet;
+            } else if (op1 == 0b011 && op2 == 0b111) {
+                inst.op = Op::kMsrImm;
+                inst.pstate_field = PStateField::kDaifClr;
+            } else {
+                return Undefined(raw);
+            }
+            inst.imm = crm;
+            return inst;
+        default:
+            return Undefined(raw); // SYS(캐시/TLB 관리)는 Stage 3
+    }
 }
 
 } // namespace
@@ -357,6 +414,12 @@ const char* OpName(Op op) {
         case Op::kCbz:       return "CBZ";
         case Op::kCbnz:      return "CBNZ";
         case Op::kSvc:       return "SVC";
+        case Op::kMrs:       return "MRS";
+        case Op::kMsrReg:    return "MSRreg";
+        case Op::kMsrImm:    return "MSRimm";
+        case Op::kEret:      return "ERET";
+        case Op::kWfi:       return "WFI";
+        case Op::kBarrier:   return "BARRIER";
     }
     return "?";
 }

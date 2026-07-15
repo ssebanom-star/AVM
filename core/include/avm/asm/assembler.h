@@ -8,6 +8,7 @@
 // tests/decoder_test.cpp에서 GNU as 출력과 대조한 상수로 교차 검증한다.
 #pragma once
 
+#include "avm/cpu/sysreg.h"
 #include "avm/types.h"
 
 namespace avm::asm64 {
@@ -178,5 +179,31 @@ constexpr u32 Blr(unsigned rn) { return 0xD63F0000u | (rn << 5); }
 constexpr u32 Ret(unsigned rn = kLr) { return 0xD65F0000u | (rn << 5); }
 
 constexpr u32 Svc(u16 imm16 = 0) { return 0xD4000001u | (u32(imm16) << 5); }
+
+// MRS/MSR (register). id는 sysreg::Id 패킹 (op0은 2 또는 3만 인코딩 가능).
+constexpr u32 SysRegAccess(bool load, unsigned rt, u16 id) {
+    return 0xD5000000u | ((load ? 1u : 0u) << 21) | (1u << 20) |
+           ((sysreg::IdOp0(id) & 1u) << 19) | (sysreg::IdOp1(id) << 16) |
+           (sysreg::IdCrn(id) << 12) | (sysreg::IdCrm(id) << 8) |
+           (sysreg::IdOp2(id) << 5) | rt;
+}
+constexpr u32 Mrs(unsigned rt, u16 id) { return SysRegAccess(true, rt, id); }
+constexpr u32 Msr(u16 id, unsigned rt) { return SysRegAccess(false, rt, id); }
+
+// MSR (immediate): PSTATE 필드.
+constexpr u32 MsrPstate(unsigned op1, unsigned op2, unsigned imm4) {
+    return 0xD500401Fu | (op1 << 16) | (imm4 << 8) | (op2 << 5);
+}
+constexpr u32 MsrSpsel(unsigned imm)   { return MsrPstate(0b000, 0b101, imm); }
+constexpr u32 MsrDaifSet(unsigned imm) { return MsrPstate(0b011, 0b110, imm); }
+constexpr u32 MsrDaifClr(unsigned imm) { return MsrPstate(0b011, 0b111, imm); }
+
+constexpr u32 Eret()  { return 0xD69F03E0u; }
+constexpr u32 Wfi()   { return 0xD503207Fu; }
+constexpr u32 Wfe()   { return 0xD503205Fu; }
+constexpr u32 Yield() { return 0xD503203Fu; }
+constexpr u32 DsbSy() { return 0xD5033F9Fu; }
+constexpr u32 DmbSy() { return 0xD5033FBFu; }
+constexpr u32 Isb()   { return 0xD5033FDFu; }
 
 } // namespace avm::asm64
