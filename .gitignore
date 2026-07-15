@@ -1,0 +1,20 @@
+# Gradle
+.gradle/
+build/
+app/build/
+local.properties
+
+# Android Studio / IDE
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 호스트 CMake 빌드 (core/ 개발용)
+core/build/
+build-host/
+
+# 기타
+*.log
+.DS_Store

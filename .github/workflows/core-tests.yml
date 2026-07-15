@@ -1,0 +1,19 @@
+name: core-tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S core -B build-host
+      - name: Build
+        run: cmake --build build-host -j
+      - name: Unit tests
+        run: ./build-host/avm_tests
+      - name: Guest binary self-test
+        run: ./build-host/avm_selftest
