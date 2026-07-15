@@ -33,6 +33,8 @@ inline constexpr u16 kMidrEl1    = Id(3, 0, 0, 0, 0);
 inline constexpr u16 kMpidrEl1   = Id(3, 0, 0, 0, 5);
 inline constexpr u16 kRevidrEl1  = Id(3, 0, 0, 0, 6);
 inline constexpr u16 kCurrentEl  = Id(3, 0, 4, 2, 2);
+inline constexpr u16 kCtrEl0     = Id(3, 3, 0, 0, 1); // 캐시 형상 (RO)
+inline constexpr u16 kDczidEl0   = Id(3, 3, 0, 0, 7); // DC ZVA 블록 크기 (RO)
 
 // --- 메모리 시스템 (Stage 3 MMU에서 의미 부여) -----------------------------
 inline constexpr u16 kSctlrEl1   = Id(3, 0, 1, 0, 0);

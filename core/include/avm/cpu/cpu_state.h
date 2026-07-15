@@ -122,6 +122,11 @@ struct alignas(64) CpuState {
 
     u64 executed_instructions = 0; // 통계: 실행된 게스트 명령어 수
 
+    // MMU 상태 세대 번호: TTBRx/TCR/SCTLR/MAIR 쓰기와 TLBI가 증가시키며,
+    // 소프트웨어 TLB(Mmu)는 값이 바뀌면 전체 무효화한다. 이 방식은 여러
+    // Mmu 인스턴스(인터프리터/JIT/검증 모드)가 일관되게 무효화를 보게 한다.
+    u32 mmu_generation = 0;
+
     // --- 접근 헬퍼 ---------------------------------------------------------
     // Xn 읽기: n==31은 XZR(항상 0).
     u64 XZr(unsigned n) const { return n == 31 ? 0 : x[n]; }
@@ -158,6 +163,7 @@ struct alignas(64) CpuState {
         irq_pending = false;
         fiq_pending = false;
         executed_instructions = 0;
+        mmu_generation = 0;
     }
 };
 

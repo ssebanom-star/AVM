@@ -15,6 +15,8 @@ bool El0Accessible(u16 id, bool is_write) {
         case kCntfrqEl0:
         case kCntpctEl0:
         case kCntvctEl0:
+        case kCtrEl0:
+        case kDczidEl0:
             return !is_write; // EL0에서는 읽기만
         default:
             return false;
@@ -63,6 +65,10 @@ bool Read(CpuState& cpu, u16 id, u64& value) {
         case kMpidrEl1:   value = sys.mpidr_el1; return true;
         case kRevidrEl1:  value = sys.revidr_el1; return true;
         case kCurrentEl:  value = static_cast<u64>(cpu.pstate.el) << 2; return true;
+        // CTR_EL0: 64B I/D 캐시 라인, PIPT (Cortex급 값).
+        case kCtrEl0:     value = 0x8444C004ull; return true;
+        // DCZID_EL0: DC ZVA 블록 = 2^4 워드 = 64바이트, DZP=0(허용).
+        case kDczidEl0:   value = 0x4ull; return true;
 
         case kSctlrEl1:   value = sys.sctlr_el1; return true;
         case kCpacrEl1:   value = sys.cpacr_el1; return true;
@@ -128,12 +134,28 @@ bool Write(CpuState& cpu, u16 id, u64 value) {
         case kCntvctEl0:
             return false;
 
-        case kSctlrEl1:   sys.sctlr_el1 = value; return true;
+        // MMU 관련 레지스터: 쓰기 시 TLB 세대를 올린다.
+        case kSctlrEl1:
+            sys.sctlr_el1 = value;
+            cpu.mmu_generation++;
+            return true;
         case kCpacrEl1:   sys.cpacr_el1 = value; return true;
-        case kTtbr0El1:   sys.ttbr0_el1 = value; return true;
-        case kTtbr1El1:   sys.ttbr1_el1 = value; return true;
-        case kTcrEl1:     sys.tcr_el1 = value; return true;
-        case kMairEl1:    sys.mair_el1 = value; return true;
+        case kTtbr0El1:
+            sys.ttbr0_el1 = value;
+            cpu.mmu_generation++;
+            return true;
+        case kTtbr1El1:
+            sys.ttbr1_el1 = value;
+            cpu.mmu_generation++;
+            return true;
+        case kTcrEl1:
+            sys.tcr_el1 = value;
+            cpu.mmu_generation++;
+            return true;
+        case kMairEl1:
+            sys.mair_el1 = value;
+            cpu.mmu_generation++;
+            return true;
 
         case kVbarEl1:    sys.vbar_el1 = value & ~0x7FFull; return true; // 2KB 정렬
         case kEsrEl1:     sys.esr_el1 = value; return true;

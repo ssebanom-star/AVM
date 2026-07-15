@@ -17,6 +17,7 @@ add_library(avm_core STATIC
     src/cpu/exception.cpp
     src/cpu/sysreg.cpp
     src/mem/phys_mem.cpp
+    src/mmu/mmu.cpp
     src/decode/decoder.cpp
     src/interp/interpreter.cpp
     src/dev/pl011.cpp
@@ -46,6 +47,7 @@ if(NOT ANDROID)
         tests/phys_mem_test.cpp
         tests/exception_test.cpp
         tests/sysreg_test.cpp
+        tests/mmu_test.cpp
         tests/pl011_test.cpp
         tests/virt_board_test.cpp
     )

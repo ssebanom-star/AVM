@@ -94,7 +94,7 @@ Generic Timer: PPI 14(EL1 phys), 11(EL1 virt), CNTFRQ = 62.5 MHz.
 | selftest | `src/selftest.cpp` | 게스트 바이너리 셀프테스트 (JNI/CLI 공용) | 1 |
 | dev | `include/avm/dev/`, `src/dev/` | PL011 UART (이후: RTC, VirtIO, 플래시) | 2~10 |
 | vm | `include/avm/vm/`, `src/vm/` | VirtBoard 조립, 테스트 펌웨어 (이후: vCPU 스레드, 수명주기) | 2~9 |
-| mmu | (Stage 3) | Stage 1 주소 변환, 소프트웨어 TLB, 캐시/TLB 관리 명령 | 3 |
+| mmu | `include/avm/mmu/`, `src/mmu/` | Stage 1 주소 변환, 소프트웨어 TLB, 폴트 분류 | 3 |
 | ir / jit | (Stage 4) | 저수준 IR, ARM64 코드 생성기, 코드 캐시, 블록 연결, W^X 관리 | 4 |
 | irq / timer | (Stage 5) | GICv3(Distributor/Redistributor/CPU IF), Generic Timer IRQ | 5 |
 | block | (Stage 6) | RAW/QCOW2 v3/ISO9660 블록 백엔드, 비동기 I/O 큐 | 6 |
@@ -196,7 +196,7 @@ AVM/
 |------|------|------|
 | 1 | CPU 인터프리터 + 물리 메모리 + 단위 테스트 | **완료** |
 | 2 | 최소 가상 보드: UART(PL011), 예외 벡터 진입, MSR/MRS, 테스트 펌웨어 | **완료** |
-| 3 | MMU: MSR/MRS, Stage 1 변환, 소프트웨어 TLB, 폴트 | |
+| 3 | MMU: Stage 1 변환, 소프트웨어 TLB, 권한/폴트, TLBI/DC ZVA | **완료** |
 | 4 | JIT: IR, ARM64 emitter, 코드 캐시, 블록 연결, 검증 모드 | |
 | 5 | GICv3 + Generic Timer + DTB 생성 + UEFI UART 부팅 | |
 | 6 | 저장장치: RAW/QCOW2 v3/ISO9660, VirtIO Block, 비동기 I/O | |

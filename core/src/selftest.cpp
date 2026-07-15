@@ -255,6 +255,78 @@ void TestFirmwareBoot(Reporter& r) {
     r.Printf("  UART: %s", board.Uart().TxLog().c_str());
 }
 
+void TestMmuTranslation(Reporter& r) {
+    r.Printf("[9] MMU: 게스트가 켠 Stage 1 변환 + 소프트웨어 TLB");
+    // RAM 8MB. 페이지 테이블 풀 = RAM+4MB. 게스트 코드가 TTBR/TCR/SCTLR을
+    // 설정하고, 비항등 매핑(VA 0x200000 -> PA RAM+0x2000)을 통해 읽는다.
+    PhysMem mem;
+    CpuState cpu;
+    mem.AddRam(board::kRamBase, 8 * 1024 * 1024, "ram");
+    cpu.Reset(board::kRamBase);
+
+    u64 next_table = board::kRamBase + 4 * 1024 * 1024;
+    auto alloc = [&next_table] {
+        const u64 t = next_table;
+        next_table += kGuestPageSize;
+        return t;
+    };
+    const u64 root = alloc();
+    constexpr u64 kAf = 1ull << 10;
+    auto map4k = [&](u64 va, u64 pa) {
+        u64 table = root;
+        for (unsigned level = 0; level < 3; ++level) {
+            const unsigned shift = 12 + 9 * (3 - level);
+            const u64 idx = (va >> shift) & 0x1FF;
+            u64 desc = 0;
+            mem.ReadT(table + idx * 8, desc);
+            if (!(desc & 1)) {
+                const u64 t = alloc();
+                mem.WriteT(table + idx * 8, t | 0b11);
+                table = t;
+            } else {
+                table = desc & 0x0000FFFFFFFFF000ull;
+            }
+        }
+        mem.WriteT(table + ((va >> 12) & 0x1FF) * 8, (pa & ~0xFFFull) | kAf | 0b11);
+    };
+    // 코드 영역 항등 매핑 + 검증용 비항등 매핑.
+    for (u64 off = 0; off < 0x10000; off += kGuestPageSize) {
+        map4k(board::kRamBase + off, board::kRamBase + off);
+    }
+    map4k(0x200000, board::kRamBase + 0x2000);
+    mem.WriteT<u64>(board::kRamBase + 0x2000, 0xFEEDFACE12345678ull);
+
+    std::vector<u32> prog;
+    prog.push_back(Movz(15, static_cast<u16>(root & 0xFFFF), 0));
+    prog.push_back(Movk(15, static_cast<u16>((root >> 16) & 0xFFFF), 1));
+    prog.push_back(Msr(sysreg::kTtbr0El1, 15));
+    const u64 tcr = 16 | (16ull << 16) | (2ull << 30) | (1ull << 23);
+    prog.push_back(Movz(15, static_cast<u16>(tcr & 0xFFFF), 0));
+    prog.push_back(Movk(15, static_cast<u16>((tcr >> 16) & 0xFFFF), 1));
+    prog.push_back(Msr(sysreg::kTcrEl1, 15));
+    prog.push_back(Movz(15, 0xFF, 0));
+    prog.push_back(Msr(sysreg::kMairEl1, 15));
+    prog.push_back(Isb());
+    prog.push_back(Mrs(15, sysreg::kSctlrEl1));
+    prog.push_back(LogicalImm(0b01, 15, 15, 1, 0, 0, true)); // orr x15,x15,#1
+    prog.push_back(Msr(sysreg::kSctlrEl1, 15));
+    prog.push_back(Isb());
+    prog.push_back(Movz(0, 0x0020, 1)); // x0 = VA 0x200000
+    prog.push_back(LdrX(1, 0, 0));
+    prog.push_back(TlbiVmalle1());
+    prog.push_back(LdrX(2, 0, 0));      // TLBI 후에도 동일 값
+    prog.push_back(Svc(0));
+    mem.LoadImage(board::kRamBase, prog.data(), prog.size() * 4);
+
+    Interpreter interp(cpu, mem);
+    const StopInfo stop = interp.Run(100000);
+    r.Check(stop.reason == StopReason::kSvc, "MMU 활성 상태로 정상 종료");
+    r.CheckEq<u64>(cpu.x[1], 0xFEEDFACE12345678ull, "비항등 매핑 로드");
+    r.CheckEq<u64>(cpu.x[2], 0xFEEDFACE12345678ull, "TLBI 후 재변환 로드");
+    r.Check(interp.GetMmu().Stats().tlb_hits > 0, "소프트웨어 TLB 적중 발생");
+    r.Check(interp.GetMmu().Stats().walks > 0, "페이지 테이블 워크 수행");
+}
+
 void TestSelfModifyingCodeTracking(Reporter& r) {
     r.Printf("[7] 코드 페이지 수정 추적 (JIT 무효화 기반)");
     TestVm vm({Nop(), Svc(0)});
@@ -271,7 +343,7 @@ void TestSelfModifyingCodeTracking(Reporter& r) {
 
 SelfTestResult RunCpuSelfTest() {
     Reporter r;
-    r.Printf("AVM Stage 2 엔진 셀프테스트");
+    r.Printf("AVM Stage 3 엔진 셀프테스트");
     r.Printf("게스트: AArch64 @ avm-virt 보드 (RAM 0x%llx)",
              (unsigned long long)board::kRamBase);
     r.Printf("----------------------------------------");
@@ -284,6 +356,7 @@ SelfTestResult RunCpuSelfTest() {
     TestPreciseFaults(r);
     TestSelfModifyingCodeTracking(r);
     TestFirmwareBoot(r);
+    TestMmuTranslation(r);
 
     r.Printf("----------------------------------------");
     r.Printf("결과: %d 통과, %d 실패", r.passed(), r.failed());

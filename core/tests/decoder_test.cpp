@@ -224,8 +224,24 @@ TEST(Decoder_UndefinedIsNotIgnored) {
     CHECK(Decode(0xA9BF7BFDu).op == Op::kUndefined); // stp (후속 단계)
     CHECK(Decode(0xD65F0FFFu).op == Op::kUndefined); // ret 인코딩 변형(불법)
     CHECK(Decode(0xD69F03E1u).op == Op::kUndefined); // eret 변형(불법)
-    // SYS(캐시/TLB 관리, op0=01)는 Stage 3: tlbi vmalle1 = 0xD508871F
-    CHECK(Decode(0xD508871Fu).op == Op::kUndefined);
+    CHECK(Decode(0xD528871Fu).op == Op::kUndefined); // SYSL (후속 단계)
+}
+
+TEST(Decoder_SysInstructions) {
+    CHECK_EQ(TlbiVmalle1(), 0xD508871Fu); // 알려진 인코딩
+    CHECK_EQ(DcZva(0), 0xD50B7420u);      // 알려진 인코딩
+
+    DecodedInst inst = Decode(TlbiVmalle1());
+    CHECK(inst.op == Op::kSys);
+    CHECK_EQ(sysreg::IdCrn(inst.sysreg), 8u);
+
+    inst = Decode(DcZva(5));
+    CHECK(inst.op == Op::kSys);
+    CHECK_EQ(sysreg::IdCrn(inst.sysreg), 7u);
+    CHECK_EQ(inst.rt, 5);
+
+    inst = Decode(IcIallu());
+    CHECK(inst.op == Op::kSys);
 }
 
 TEST(Decoder_BitmaskImmediates) {

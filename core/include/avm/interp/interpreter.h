@@ -14,6 +14,7 @@
 #include "avm/cpu/exception.h"
 #include "avm/decode/decoder.h"
 #include "avm/mem/phys_mem.h"
+#include "avm/mmu/mmu.h"
 
 namespace avm {
 
@@ -29,7 +30,7 @@ struct ExecConfig {
 class Interpreter {
 public:
     Interpreter(CpuState& cpu, PhysMem& mem, ExecConfig config = {})
-        : cpu_(cpu), mem_(mem), config_(config) {}
+        : cpu_(cpu), mem_(mem), config_(config), mmu_(cpu, mem) {}
 
     // 명령어 1개 실행. 계속 실행 가능하면 reason == kNone.
     StopInfo Step();
@@ -38,6 +39,8 @@ public:
     // 실행 루프의 인터럽트 검사 지점은 이 함수 안에 있다 (Stage 5에서
     // 가상 GIC의 IRQ 라인을 이 지점에서 샘플링한다).
     StopInfo Run(u64 max_instructions);
+
+    Mmu& GetMmu() { return mmu_; }
 
 private:
     StopInfo Execute(const DecodedInst& inst, GuestAddr pc);
@@ -48,6 +51,15 @@ private:
     StopInfo RaiseSync(ExceptionClass ec, u32 iss, u64 far, u64 preferred_return,
                        StopReason stop_reason, u64 pc, u32 raw);
 
+    // 데이터 접근 (VA 기준): 정렬 검사(SCTLR.A) -> MMU 변환 -> 물리 접근.
+    // 실패 시 stop을 채우고 false 반환 (guest_vectors면 벡터 진입 후
+    // stop.reason == kNone).
+    bool DataAccess(u64 va, void* buf, unsigned size, bool is_store,
+                    u64 pc, u32 raw, StopInfo& stop);
+
+    // SYS 명령 실행 (TLBI / DC ZVA / 기타 캐시 유지보수).
+    StopInfo ExecuteSys(const DecodedInst& inst, GuestAddr pc);
+
     // NZCV를 갱신하는 덧셈 (SUB는 ~y, carry=1로 호출).
     u64 AddWithCarry(u64 x, u64 y, bool carry_in, bool is64, bool set_flags);
     u64 ApplyShift(u64 value, ShiftType type, unsigned amount, bool is64) const;
@@ -56,6 +68,7 @@ private:
     CpuState& cpu_;
     PhysMem& mem_;
     ExecConfig config_;
+    Mmu mmu_;
 };
 
 } // namespace avm

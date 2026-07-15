@@ -282,6 +282,15 @@ DecodedInst DecodeSystem(u32 raw) {
         inst.rt = static_cast<u8>(rt);
         return inst;
     }
+    if (Bits32(raw, 19, 19) == 1) {
+        // SYS (L=0): TLBI/캐시 유지보수. SYSL(L=1)은 후속 단계.
+        if (l != 0) return Undefined(raw);
+        if (crn != 7 && crn != 8) return Undefined(raw); // AT 등은 후속
+        inst.op = Op::kSys;
+        inst.sysreg = sysreg::Id(1, op1, crn, crm, op2);
+        inst.rt = static_cast<u8>(rt);
+        return inst;
+    }
     if (l != 0) return Undefined(raw);
 
     switch (crn) {
@@ -420,6 +429,7 @@ const char* OpName(Op op) {
         case Op::kEret:      return "ERET";
         case Op::kWfi:       return "WFI";
         case Op::kBarrier:   return "BARRIER";
+        case Op::kSys:       return "SYS";
     }
     return "?";
 }

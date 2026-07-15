@@ -106,6 +106,56 @@ StopInfo Interpreter::RaiseSync(ExceptionClass ec, u32 iss, u64 far,
     return MakeStop(stop_reason, pc, raw);
 }
 
+bool Interpreter::DataAccess(u64 va, void* buf, unsigned size, bool is_store,
+                             u64 pc, u32 raw, StopInfo& stop) {
+    const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
+    const auto ec = from_el0 ? ExceptionClass::kDataAbortLower
+                             : ExceptionClass::kDataAbort;
+    const u32 wnr = is_store ? 1u << 6 : 0;
+
+    // SCTLR_EL1.A: 정렬 검사 활성 시 비정렬 접근은 정렬 폴트.
+    if ((cpu_.sys.sctlr_el1 & 2) && (va & (size - 1)) != 0) {
+        stop = RaiseSync(ec, wnr | fsc::kAlignment, va, pc,
+                         StopReason::kDataAbort, pc, raw);
+        stop.fault = MemFault{MemFaultKind::kPermission, va, is_store, false};
+        return false;
+    }
+
+    // 페이지 경계를 걸치는 비정렬 접근은 페이지별로 독립 변환한다
+    // (두 페이지가 물리적으로 불연속일 수 있으므로).
+    u8* cursor = static_cast<u8*>(buf);
+    u64 cur_va = va;
+    unsigned remaining = size;
+    const AccessType type = is_store ? AccessType::kStore : AccessType::kLoad;
+    while (remaining > 0) {
+        const unsigned in_page = static_cast<unsigned>(
+            kGuestPageSize - (cur_va & kGuestPageMask));
+        const unsigned chunk = remaining < in_page ? remaining : in_page;
+
+        u64 pa = cur_va;
+        MmuFault mmu_fault;
+        if (!mmu_.Translate(cur_va, type, mmu_fault, pa)) {
+            stop = RaiseSync(ec, wnr | mmu_fault.fsc, cur_va, pc,
+                             StopReason::kDataAbort, pc, raw);
+            stop.fault = MemFault{MemFaultKind::kPermission, cur_va, is_store,
+                                  false};
+            return false;
+        }
+        const MemFault fault = is_store ? mem_.Write(pa, cursor, chunk)
+                                        : mem_.Read(pa, cursor, chunk);
+        if (fault) {
+            stop = RaiseSync(ec, wnr | fsc::kSyncExternal, cur_va, pc,
+                             StopReason::kDataAbort, pc, raw);
+            stop.fault = fault;
+            return false;
+        }
+        cur_va += chunk;
+        cursor += chunk;
+        remaining -= chunk;
+    }
+    return true;
+}
+
 StopInfo Interpreter::Step() {
     const GuestAddr pc = cpu_.pc;
     if ((pc & 0x3) != 0) {
@@ -113,13 +163,23 @@ StopInfo Interpreter::Step() {
         return RaiseSync(ExceptionClass::kPcAlignment, 0, pc, pc,
                          StopReason::kPcMisaligned, pc, 0);
     }
+    const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
+    const auto abort_ec = from_el0 ? ExceptionClass::kInstructionAbortLower
+                                   : ExceptionClass::kInstructionAbort;
+
+    // 인출 주소 변환 (MMU 꺼짐이면 항등).
+    u64 fetch_pa = pc;
+    {
+        MmuFault mmu_fault;
+        if (!mmu_.Translate(pc, AccessType::kFetch, mmu_fault, fetch_pa)) {
+            return RaiseSync(abort_ec, mmu_fault.fsc, pc, pc,
+                             StopReason::kInstAbort, pc, 0);
+        }
+    }
     u32 raw = 0;
-    if (MemFault fault = mem_.FetchU32(pc, raw)) {
-        const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
-        const auto ec = from_el0 ? ExceptionClass::kInstructionAbortLower
-                                 : ExceptionClass::kInstructionAbort;
-        // IFSC = 0b010000: 동기 외부 중단 (MMU 도입 전의 물리 접근 실패).
-        StopInfo info = RaiseSync(ec, 0b010000, pc, pc,
+    if (MemFault fault = mem_.FetchU32(fetch_pa, raw)) {
+        // 변환 이후의 물리 접근 실패: 동기 외부 중단.
+        StopInfo info = RaiseSync(abort_ec, fsc::kSyncExternal, pc, pc,
                                   StopReason::kInstAbort, pc, 0);
         info.fault = fault;
         return info;
@@ -260,26 +320,17 @@ StopInfo Interpreter::Execute(const DecodedInst& inst, GuestAddr pc) {
                 addr = base + static_cast<u64>(inst.mem_offset);
             }
             const unsigned size = 1u << inst.access_size_log2;
-            MemFault fault;
-            if (inst.op == Op::kLdr) {
-                u64 value = 0;
-                fault = mem_.Read(addr, &value, size); // 리틀 엔디언 zero-extend
-                if (!fault) cpu_.SetXZr(inst.rt, value);
-            } else {
-                const u64 value = cpu_.XZr(inst.rt);
-                fault = mem_.Write(addr, &value, size);
+            u64 value = 0;
+            const bool is_store = inst.op == Op::kStr;
+            if (is_store) value = cpu_.XZr(inst.rt);
+
+            StopInfo stop_info;
+            if (!DataAccess(addr, &value, size, is_store, pc, inst.raw,
+                            stop_info)) {
+                return stop_info;
             }
-            if (fault) {
-                const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
-                const auto ec = from_el0 ? ExceptionClass::kDataAbortLower
-                                         : ExceptionClass::kDataAbort;
-                // ISS: WnR(bit6) | DFSC=0b010000 (동기 외부 중단 — MMU 이전).
-                const u32 iss = (fault.is_write ? 1u << 6 : 0) | 0b010000;
-                StopInfo info = RaiseSync(ec, iss, fault.addr, pc,
-                                          StopReason::kDataAbort, pc, inst.raw);
-                info.fault = fault;
-                return info;
-            }
+            if (!is_store) cpu_.SetXZr(inst.rt, value);
+
             if (inst.addr_mode == AddrMode::kPostIndex) {
                 cpu_.SetXSp(inst.rn, base + static_cast<u64>(inst.mem_offset));
             } else if (inst.addr_mode == AddrMode::kPreIndex) {
@@ -410,11 +461,61 @@ StopInfo Interpreter::Execute(const DecodedInst& inst, GuestAddr pc) {
         case Op::kBarrier:
             // 단일 vCPU 인터프리터: 프로그램 순서 실행이므로 no-op 의미.
             break;
+
+        case Op::kSys:
+            return ExecuteSys(inst, pc);
     }
 
     cpu_.pc = next_pc;
     cpu_.executed_instructions++;
     return stop;
+}
+
+StopInfo Interpreter::ExecuteSys(const DecodedInst& inst, GuestAddr pc) {
+    const unsigned crn = sysreg::IdCrn(inst.sysreg);
+    const unsigned op1 = sysreg::IdOp1(inst.sysreg);
+    const unsigned crm = sysreg::IdCrm(inst.sysreg);
+    const unsigned op2 = sysreg::IdOp2(inst.sysreg);
+
+    if (crn == 8) {
+        // TLBI 계열. EL0에서는 UNDEFINED.
+        if (cpu_.pstate.el == ExceptionLevel::EL0) {
+            return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                             StopReason::kUndefinedInst, pc, inst.raw);
+        }
+        // 보수적 전체 무효화: 세대 번호를 올려 모든 Mmu 인스턴스
+        // (인터프리터/JIT/검증 모드)의 TLB가 비워지게 한다.
+        // VA/ASID 단위 무효화는 Stage 11 최적화.
+        cpu_.mmu_generation++;
+    } else if (crn == 7) {
+        // AT(주소 변환 조회, CRm=8/9)는 미구현 — 조용히 무시하지 않는다.
+        if (crm == 8 || crm == 9) {
+            return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                             StopReason::kUndefinedInst, pc, inst.raw);
+        }
+        // 캐시 유지보수 (DC/IC 계열).
+        if (op1 == 3 && crm == 4 && op2 == 1) {
+            // DC ZVA: 64바이트 블록을 0으로 쓴다 (DCZID_EL0.BS=4).
+            // 일반 스토어와 동일한 변환/권한/폴트 경로를 거친다.
+            const u64 va = cpu_.XZr(inst.rt) & ~63ull;
+            u8 zeros[64] = {};
+            StopInfo stop_info;
+            if (!DataAccess(va, zeros, 64, /*is_store=*/true, pc, inst.raw,
+                            stop_info)) {
+                return stop_info;
+            }
+        }
+        // 그 외 DC/IC(무효화·클린)는 에뮬레이터 메모리가 항상 일관되므로
+        // 아키텍처적으로 no-op이 정확하다. IC 계열은 Stage 4에서 JIT 코드
+        // 캐시 무효화와 연결된다.
+    } else {
+        return RaiseSync(ExceptionClass::kUnknown, 0, 0, pc,
+                         StopReason::kUndefinedInst, pc, inst.raw);
+    }
+
+    cpu_.pc = pc + 4;
+    cpu_.executed_instructions++;
+    return StopInfo{};
 }
 
 } // namespace avm

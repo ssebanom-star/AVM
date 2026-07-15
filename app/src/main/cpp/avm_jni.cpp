@@ -38,8 +38,8 @@ Java_com_avm_app_NativeBridge_lastSelfTestPassed(JNIEnv* /*env*/, jobject /*thiz
 JNIEXPORT jstring JNICALL
 Java_com_avm_app_NativeBridge_engineVersion(JNIEnv* env, jobject /*thiz*/) {
     return ToJString(env,
-                     "AVM engine 0.2.0-stage2 (AArch64 interpreter + "
-                     "EL0/EL1 exceptions + PL011 UART, avm-virt board)");
+                     "AVM engine 0.3.0-stage3 (AArch64 interpreter + "
+                     "exceptions + MMU/TLB + PL011, avm-virt board)");
 }
 
 } // extern "C"

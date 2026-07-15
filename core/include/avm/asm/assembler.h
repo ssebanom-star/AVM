@@ -198,6 +198,17 @@ constexpr u32 MsrSpsel(unsigned imm)   { return MsrPstate(0b000, 0b101, imm); }
 constexpr u32 MsrDaifSet(unsigned imm) { return MsrPstate(0b011, 0b110, imm); }
 constexpr u32 MsrDaifClr(unsigned imm) { return MsrPstate(0b011, 0b111, imm); }
 
+// SYS 명령 (TLBI/DC/IC): op0=01 고정.
+constexpr u32 Sys(unsigned op1, unsigned crn, unsigned crm, unsigned op2,
+                  unsigned rt = 31) {
+    return 0xD5080000u | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) |
+           rt;
+}
+constexpr u32 TlbiVmalle1()      { return Sys(0, 8, 7, 0); }
+constexpr u32 TlbiVae1(unsigned rt) { return Sys(0, 8, 7, 1, rt); }
+constexpr u32 DcZva(unsigned rt) { return Sys(3, 7, 4, 1, rt); }
+constexpr u32 IcIallu()          { return Sys(0, 7, 5, 0); }
+
 constexpr u32 Eret()  { return 0xD69F03E0u; }
 constexpr u32 Wfi()   { return 0xD503207Fu; }
 constexpr u32 Wfe()   { return 0xD503205Fu; }

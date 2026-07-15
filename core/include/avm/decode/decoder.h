@@ -59,6 +59,7 @@ enum class Op : u16 {
     kEret,
     kWfi,
     kBarrier,  // DSB/DMB/ISB — 단일 vCPU 인터프리터에서는 no-op 의미
+    kSys,      // SYS: TLBI(CRn=8) / 캐시 유지보수 DC·IC(CRn=7, DC ZVA 포함)
 };
 
 // MSR (immediate)의 PSTATE 필드.

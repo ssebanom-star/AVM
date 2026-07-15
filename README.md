@@ -11,7 +11,7 @@ AVM은 Android ARM64 기기에서 **현대적인 ARM64 운영체제(Linux, 이�
 - 실행 방식: EL2/KVM 없이 동작하는 **ARM64→ARM64 동적 바이너리 변환** + 소프트웨어 MMU
 - 전체 설계: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-## 현재 상태: Stage 2 / 11 (최소 가상 보드)
+## 현재 상태: Stage 3 / 11 (MMU)
 
 **Stage 1 — CPU 인터프리터:**
 
@@ -37,9 +37,21 @@ AVM은 Android ARM64 기기에서 **현대적인 ARM64 운영체제(Linux, 이�
   준비), PeriphID/CellID
 - VirtBoard: 플래시 ROM(리셋 벡터 0x0) + RAM + UART 조립, 직접 조립한 최소 테스트
   펌웨어가 **플래시에서 부팅해 UART 배너 출력 → SVC 예외 → ERET 복귀 → WFI**까지 실행
-- 호스트 단위 테스트 71개 + 게스트 바이너리 셀프테스트(검증 38항목)
-- Android 앱 (Jetpack Compose): 네이티브 엔진에서 게스트 ARM64 테스트 바이너리와
-  펌웨어 부팅을 실행하고 결과를 표시하는 개발 콘솔
+**Stage 3 — MMU:**
+
+- ARMv8-A Stage 1 주소 변환 (EL1&0 레짐): 4KB 그래뉼, 레벨 0~3 다단계 워크,
+  블록(1GB/2MB)·페이지(4KB) 매핑, TTBR0/TTBR1, TCR(T0SZ/T1SZ/EPD/TG)
+- 권한 모델: AP[2:1], UXN/PXN, Access Flag, EL0-쓰기 가능 페이지의 EL1 실행
+  금지, EL0/EL1별 읽기·쓰기·실행 검사
+- 정밀 폴트 분류: translation/permission/access-flag/주소 범위/워크 중 외부
+  중단을 레벨별 정확한 DFSC/IFSC로 ESR에 보고, FAR = 폴트 VA
+- 소프트웨어 TLB: 명령어/데이터 분리 직접 사상(각 256엔트리), 적중/미스/워크
+  통계, 세대 번호 기반 무효화 (MSR TTBRx/TCR/SCTLR/MAIR 및 TLBI와 연동)
+- TLBI 계열 명령, DC ZVA(64바이트 제로, DCZID_EL0), IC/DC 유지보수,
+  CTR_EL0, SCTLR.A 정렬 검사, 페이지 경계 걸친 비정렬 접근의 페이지별 변환
+- 호스트 단위 테스트 92개 + 게스트 바이너리 셀프테스트(검증 43항목)
+- Android 앱 (Jetpack Compose): 네이티브 엔진에서 게스트 ARM64 테스트 바이너리,
+  펌웨어 부팅, MMU 변환을 실행하고 결과를 표시하는 개발 콘솔
 
 ## 빌드
 
