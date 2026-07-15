@@ -8,6 +8,7 @@
 #include "avm/asm/assembler.h"
 #include "avm/board.h"
 #include "avm/interp/interpreter.h"
+#include "avm/jit/jit_engine.h"
 #include "avm/vm/test_firmware.h"
 #include "avm/vm/virt_board.h"
 
@@ -327,6 +328,46 @@ void TestMmuTranslation(Reporter& r) {
     r.Check(interp.GetMmu().Stats().walks > 0, "페이지 테이블 워크 수행");
 }
 
+void TestJit(Reporter& r) {
+#if defined(__aarch64__)
+    r.Printf("[10] JIT: 호스트 ARM64 번역 실행 + 참조 인터프리터 검증");
+    const bool real_jit = true;
+#else
+    r.Printf("[10] JIT: (비-ARM64 호스트 — 인터프리터 폴백, 번역만 검증)");
+    const bool real_jit = false;
+#endif
+    using namespace jit;
+    // 1..10 합 = 55 (직접 분기 루프 + BL/RET). JIT로 실행하고 검증 모드로
+    // 블록 단위 대조, 최종 상태를 인터프리터와 비교.
+    const std::vector<u32> prog = {
+        Movz(0, 0), Movz(1, 10),
+        Cbz(1, 16), Bl(16), SubImm(1, 1, 1), B(-12), Svc(0),
+        AddReg(0, 0, 1), Ret(),
+    };
+    PhysMem mem;
+    CpuState cpu;
+    mem.AddRam(board::kRamBase, 1 << 20, "ram");
+    mem.LoadImage(board::kRamBase, prog.data(), prog.size() * 4);
+    cpu.Reset(board::kRamBase);
+    cpu.SetCurrentSp(board::kRamBase + (1 << 20));
+
+    JitEngine jiteng(cpu, mem);
+    jiteng.SetValidate(true);
+    const StopInfo stop = jiteng.Run(100000);
+    r.Check(stop.reason == StopReason::kSvc, "JIT 실행 정상 종료(SVC)");
+    r.Check(!jiteng.ValidationFailed(), "JIT-인터프리터 블록 단위 검증 통과");
+    r.CheckEq<u64>(cpu.x[0], 55ull, "1..10 합 = 55");
+
+    // 실제 번역/실행은 ARM64 호스트에서만 (그 외에는 인터프리터 폴백).
+    if (real_jit) {
+        r.Check(jiteng.GetStats().blocks_translated > 0, "번역 블록 생성됨");
+    }
+    r.Printf("  JIT 활성=%s, 번역 블록=%llu, 인터프리터 폴백=%llu",
+             real_jit ? "예" : "아니오(폴백)",
+             (unsigned long long)jiteng.GetStats().blocks_translated,
+             (unsigned long long)jiteng.GetStats().interp_steps);
+}
+
 void TestSelfModifyingCodeTracking(Reporter& r) {
     r.Printf("[7] 코드 페이지 수정 추적 (JIT 무효화 기반)");
     TestVm vm({Nop(), Svc(0)});
@@ -343,7 +384,7 @@ void TestSelfModifyingCodeTracking(Reporter& r) {
 
 SelfTestResult RunCpuSelfTest() {
     Reporter r;
-    r.Printf("AVM Stage 3 엔진 셀프테스트");
+    r.Printf("AVM Stage 4 엔진 셀프테스트");
     r.Printf("게스트: AArch64 @ avm-virt 보드 (RAM 0x%llx)",
              (unsigned long long)board::kRamBase);
     r.Printf("----------------------------------------");
@@ -357,6 +398,7 @@ SelfTestResult RunCpuSelfTest() {
     TestSelfModifyingCodeTracking(r);
     TestFirmwareBoot(r);
     TestMmuTranslation(r);
+    TestJit(r);
 
     r.Printf("----------------------------------------");
     r.Printf("결과: %d 통과, %d 실패", r.passed(), r.failed());

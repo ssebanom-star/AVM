@@ -97,6 +97,12 @@ public:
     // 페이지에 번역된 코드가 있음을 표시 (Stage 4).
     void MarkPageHasCode(GuestAddr addr);
 
+    // 검증 모드 지원: 모든 RAM 영역의 바이트를 스냅샷/복원한다 (개발 전용).
+    // JIT와 참조 인터프리터를 동일한 시작 상태에서 독립 실행해 비교할 때
+    // 게스트 메모리 변경을 격리하기 위해 사용한다.
+    std::vector<u8> SnapshotRam() const;
+    void RestoreRam(const std::vector<u8>& snapshot);
+
     struct RegionInfo {
         GuestAddr base = 0;
         u64 size = 0;

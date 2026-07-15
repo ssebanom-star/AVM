@@ -95,7 +95,7 @@ Generic Timer: PPI 14(EL1 phys), 11(EL1 virt), CNTFRQ = 62.5 MHz.
 | dev | `include/avm/dev/`, `src/dev/` | PL011 UART (이후: RTC, VirtIO, 플래시) | 2~10 |
 | vm | `include/avm/vm/`, `src/vm/` | VirtBoard 조립, 테스트 펌웨어 (이후: vCPU 스레드, 수명주기) | 2~9 |
 | mmu | `include/avm/mmu/`, `src/mmu/` | Stage 1 주소 변환, 소프트웨어 TLB, 폴트 분류 | 3 |
-| ir / jit | (Stage 4) | 저수준 IR, ARM64 코드 생성기, 코드 캐시, 블록 연결, W^X 관리 | 4 |
+| jit | `include/avm/jit/`, `src/jit/` | ARM64 이미터, 코드 캐시(W^X), 번역 블록, 블록 연결, 검증 모드 | 4 |
 | irq / timer | (Stage 5) | GICv3(Distributor/Redistributor/CPU IF), Generic Timer IRQ | 5 |
 | block | (Stage 6) | RAW/QCOW2 v3/ISO9660 블록 백엔드, 비동기 I/O 큐 | 6 |
 | fw | (Stage 5~6) | DTB 생성, EDK II AArch64 펌웨어 이미지 적재/NVRAM | 5~6 |
@@ -177,6 +177,46 @@ AVM/
   동일 블록을 인터프리터/JIT로 각각 실행해 레지스터·PSTATE·메모리 변경·예외를
   비교하고, 불일치 시 최소 재현 로그를 남긴다.
 
+## 9a. JIT 동적 바이너리 변환 (`jit/`, Stage 4)
+
+성능 핵심. ARM64 게스트를 ARM64 호스트 코드로 직접 변환한다.
+
+- **실행 ABI**: 각 번역 블록은 호스트 서브루틴 `u64 block(CpuState* x0,
+  JitRuntime* x1)`. 프롤로그가 `x0→x19`(state), `x1→x20`(rt)로 옮기고
+  콜리 세이브(x19–x22, fp, lr)를 저장한다. 종료 시 `CpuState.pc`를 갱신하고
+  종료 코드를 x0로 반환한다.
+- **레지스터 처리(정확성 우선)**: 게스트 레지스터는 `CpuState` 메모리에서
+  로드/스토어(load-operate-store). 조건 플래그는 호스트 `ADDS/SUBS/ANDS` +
+  `MRS NZCV`로 직접 계산 — 게스트/호스트가 동일 ISA이므로 플래그 의미가
+  정확히 일치한다. 호스트 레지스터 캐싱(레지스터 할당 고도화)은 Stage 11.
+- **블록 연결(체이닝)**: 직접 분기는 방출 시 자리표시 `b`를 두고, 대상
+  블록이 캐시에 존재하면 그 `b`를 대상 블록 본체로 런타임 패치한다.
+  조건 분기는 양쪽 에지를 각각 링크한다. 루프는 몇 개 블록만 번역 후 재사용.
+- **하이브리드**: 정수/논리/시프트/이동/분기/로드·스토어는 JIT 인라인 방출.
+  SVC/MRS/MSR/ERET/WFI/SYS/미정의 등은 블록을 그 지점에서 종료(`kInterpret`)
+  하고 디스패처가 참조 인터프리터로 한 스텝 실행한다. 미구현을 NOP로 넘기지
+  않으며 모든 경로가 아키텍처적으로 정확하다.
+- **메모리/SP 슬로우 패스**: 게스트 로드/스토어와 SP 형식 접근, NZCV 저장은
+  C++ 헬퍼(`avm_jit_load/store`, `avm_jit_read/write_sp` 등)를 호출한다.
+  이들은 인터프리터와 동일한 `MemAccess` 경로를 공유해 의미가 일치한다.
+  RAM 인라인 빠른 경로는 Stage 11.
+- **코드 캐시 / W^X**: `mmap` 아레나에 범프 할당. Android W^X 대응으로
+  방출/패치 시 페이지를 잠시 RW로 바꾸고 다시 RX로 되돌린 뒤
+  `__builtin___clear_cache`로 I-cache 동기화. 이중 매핑은 후속 최적화.
+- **자체 수정 코드**: 코드 페이지 세대 번호(PhysMem 메타데이터)로 블록을
+  무효화한다. TLBI/코드 쓰기가 세대를 올리면 다음 조회에서 재번역.
+- **검증 모드**: 각 블록을 JIT와 참조 인터프리터로 각각 실행(RAM 스냅샷으로
+  격리)해 레지스터·PC·PSTATE·메모리를 대조. 불일치 시 최소 재현 로그.
+- **호스트 검증 전략**: 개발/CI 호스트가 x86-64이므로 JIT 출력을 직접
+  실행할 수 없다. 따라서 (1) 이미터 인코딩은 GNU as 출력과 교차 검증,
+  (2) 번역기 블록 구조는 호스트 무관 단위 테스트, (3) **실제 실행/검증은
+  aarch64로 크로스 컴파일해 qemu-user로 구동**한다(CI 잡 `jit-arm64-tests`).
+  단말(APK)에서는 네이티브 ARM64로 그대로 실행된다.
+
+현재 IR는 "디코드된 명령 블록" 수준의 중간 표현이며, 백엔드가 이를 호스트
+코드로 로우어링한다. 더 세분화된 타입드 IR와 최적화 패스(상수 전파, 죽은
+코드 제거, 플래그 지연 계산)는 Stage 11의 후속 작업이다.
+
 ## 10. 테스트 전략
 
 - **호스트 단위 테스트** (`core/tests/`, 의존성 없는 자체 프레임워크):
@@ -197,7 +237,7 @@ AVM/
 | 1 | CPU 인터프리터 + 물리 메모리 + 단위 테스트 | **완료** |
 | 2 | 최소 가상 보드: UART(PL011), 예외 벡터 진입, MSR/MRS, 테스트 펌웨어 | **완료** |
 | 3 | MMU: Stage 1 변환, 소프트웨어 TLB, 권한/폴트, TLBI/DC ZVA | **완료** |
-| 4 | JIT: IR, ARM64 emitter, 코드 캐시, 블록 연결, 검증 모드 | |
+| 4 | JIT: ARM64 emitter, 코드 캐시(W^X), 번역 블록, 블록 연결, 검증 모드 | **완료** |
 | 5 | GICv3 + Generic Timer + DTB 생성 + UEFI UART 부팅 | |
 | 6 | 저장장치: RAW/QCOW2 v3/ISO9660, VirtIO Block, 비동기 I/O | |
 | 7 | ARM64 Linux 커널 + initrd 부팅, 사용자 공간 진입 | |

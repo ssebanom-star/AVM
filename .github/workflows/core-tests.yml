@@ -17,3 +17,26 @@ jobs:
         run: ./build-host/avm_tests
       - name: Guest binary self-test
         run: ./build-host/avm_selftest
+
+  # JIT가 생성한 ARM64 코드를 실제로 실행해 검증한다.
+  # 개발/CI 호스트가 x86-64이므로 aarch64로 크로스 컴파일해 qemu-user로 실행.
+  jit-arm64-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM64 cross toolchain and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-aarch64-linux-gnu qemu-user-static
+      - name: Configure (aarch64 cross)
+        run: >
+          cmake -S core -B build-arm64
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+          -DCMAKE_CXX_FLAGS=-static
+      - name: Build
+        run: cmake --build build-arm64 -j
+      - name: Unit tests + JIT execution (qemu-aarch64)
+        run: qemu-aarch64-static ./build-arm64/avm_tests
+      - name: Self-test with real JIT (qemu-aarch64)
+        run: qemu-aarch64-static ./build-arm64/avm_selftest

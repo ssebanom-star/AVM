@@ -238,4 +238,33 @@ void PhysMem::MarkPageHasCode(GuestAddr addr) {
     }
 }
 
+std::vector<u8> PhysMem::SnapshotRam() const {
+    u64 total = 0;
+    for (const auto& region : regions_) {
+        if (region->info.is_ram && region->info.writable) total += region->info.size;
+    }
+    std::vector<u8> snapshot(total);
+    u64 offset = 0;
+    for (const auto& region : regions_) {
+        if (region->info.is_ram && region->info.writable) {
+            std::memcpy(snapshot.data() + offset, region->data.get(),
+                        region->info.size);
+            offset += region->info.size;
+        }
+    }
+    return snapshot;
+}
+
+void PhysMem::RestoreRam(const std::vector<u8>& snapshot) {
+    u64 offset = 0;
+    for (auto& region : regions_) {
+        if (region->info.is_ram && region->info.writable) {
+            if (offset + region->info.size > snapshot.size()) break;
+            std::memcpy(region->data.get(), snapshot.data() + offset,
+                        region->info.size);
+            offset += region->info.size;
+        }
+    }
+}
+
 } // namespace avm

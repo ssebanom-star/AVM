@@ -187,4 +187,46 @@ bool Mmu::Walk(u64 va, MmuFault& fault, TlbEntry& entry) {
     }
 }
 
+bool MemAccess(Mmu& mmu, PhysMem& mem, const CpuState& cpu, u64 va, void* buf,
+               unsigned size, bool is_store, u32& fsc, u64& fault_va,
+               MemFaultKind* kind_out) {
+    // SCTLR_EL1.A: 정렬 검사 활성 시 비정렬 접근은 정렬 폴트.
+    if ((cpu.sys.sctlr_el1 & 2) && (va & (size - 1)) != 0) {
+        fsc = fsc::kAlignment;
+        fault_va = va;
+        if (kind_out) *kind_out = MemFaultKind::kPermission;
+        return false;
+    }
+    const AccessType type = is_store ? AccessType::kStore : AccessType::kLoad;
+    u8* cursor = static_cast<u8*>(buf);
+    u64 cur_va = va;
+    unsigned remaining = size;
+    while (remaining > 0) {
+        const unsigned in_page = static_cast<unsigned>(
+            kGuestPageSize - (cur_va & kGuestPageMask));
+        const unsigned chunk = remaining < in_page ? remaining : in_page;
+
+        u64 pa = cur_va;
+        MmuFault mmu_fault;
+        if (!mmu.Translate(cur_va, type, mmu_fault, pa)) {
+            fsc = mmu_fault.fsc;
+            fault_va = cur_va;
+            if (kind_out) *kind_out = MemFaultKind::kPermission;
+            return false;
+        }
+        const MemFault fault = is_store ? mem.Write(pa, cursor, chunk)
+                                        : mem.Read(pa, cursor, chunk);
+        if (fault) {
+            fsc = fsc::kSyncExternal;
+            fault_va = cur_va;
+            if (kind_out) *kind_out = fault.kind;
+            return false;
+        }
+        cur_va += chunk;
+        cursor += chunk;
+        remaining -= chunk;
+    }
+    return true;
+}
+
 } // namespace avm

@@ -20,6 +20,9 @@ add_library(avm_core STATIC
     src/mmu/mmu.cpp
     src/decode/decoder.cpp
     src/interp/interpreter.cpp
+    src/jit/arm64_emitter.cpp
+    src/jit/code_cache.cpp
+    src/jit/jit_engine.cpp
     src/dev/pl011.cpp
     src/vm/virt_board.cpp
     src/selftest.cpp
@@ -50,6 +53,10 @@ if(NOT ANDROID)
         tests/mmu_test.cpp
         tests/pl011_test.cpp
         tests/virt_board_test.cpp
+        tests/arm64_emitter_test.cpp
+        tests/code_cache_test.cpp
+        tests/jit_translate_test.cpp
+        tests/jit_exec_test.cpp
     )
     target_link_libraries(avm_tests PRIVATE avm_core)
     target_include_directories(avm_tests PRIVATE tests)

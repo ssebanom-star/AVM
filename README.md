@@ -11,7 +11,7 @@ AVM은 Android ARM64 기기에서 **현대적인 ARM64 운영체제(Linux, 이�
 - 실행 방식: EL2/KVM 없이 동작하는 **ARM64→ARM64 동적 바이너리 변환** + 소프트웨어 MMU
 - 전체 설계: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-## 현재 상태: Stage 3 / 11 (MMU)
+## 현재 상태: Stage 4 / 11 (JIT 동적 바이너리 변환)
 
 **Stage 1 — CPU 인터프리터:**
 
@@ -49,9 +49,30 @@ AVM은 Android ARM64 기기에서 **현대적인 ARM64 운영체제(Linux, 이�
   통계, 세대 번호 기반 무효화 (MSR TTBRx/TCR/SCTLR/MAIR 및 TLBI와 연동)
 - TLBI 계열 명령, DC ZVA(64바이트 제로, DCZID_EL0), IC/DC 유지보수,
   CTR_EL0, SCTLR.A 정렬 검사, 페이지 경계 걸친 비정렬 접근의 페이지별 변환
-- 호스트 단위 테스트 92개 + 게스트 바이너리 셀프테스트(검증 43항목)
-- Android 앱 (Jetpack Compose): 네이티브 엔진에서 게스트 ARM64 테스트 바이너리,
-  펌웨어 부팅, MMU 변환을 실행하고 결과를 표시하는 개발 콘솔
+**Stage 4 — JIT 동적 바이너리 변환 (성능 핵심):**
+
+- 호스트 ARM64 머신 코드 이미터: 성장 가능한 버퍼, 라벨/분기 패치, MOVZ/MOVK,
+  ADD/SUB(+S), AND/ORR/EOR(+S, 시프트), LDR/STR, STP/LDP, 분기, MRS/MSR NZCV
+- 실행 코드 캐시: `mmap` 실행 메모리 아레나, Android W^X 대응(RW↔RX mprotect
+  토글 + `__builtin___clear_cache`), 범프 할당, 코드 캐시 제거/재사용, 워드 패치
+- 번역 블록: basic block 단위 번역, 직접/조건/간접 분기·페이지 경계·최대 명령
+  수에서 종료, 조건 분기 양쪽 에지 캐시
+- **직접 블록 연결(체이닝)**: 직접 분기가 디스패처 복귀 없이 대상 블록 본체로
+  점프하도록 런타임 패치 — 루프는 몇 개 블록만 번역 후 재사용
+- ARM64→ARM64 직접 대응: 게스트 산술/논리/시프트/플래그를 호스트 명령으로 방출
+  (조건 플래그는 호스트 NZCV로 직접 계산), 게스트 상태·SP 형식·XZR 의미 보존
+- 하이브리드 실행: 핵심 경로(정수/논리/이동/분기/로드·스토어)는 JIT 인라인,
+  그 외(SVC/MRS/MSR/ERET/WFI/SYS/미정의)는 블록 경계에서 참조 인터프리터로 한
+  스텝 — 미구현을 NOP로 넘기지 않고 모든 경로가 정확
+- 자체 수정 코드 감지: 코드 페이지 세대 번호로 번역 블록 무효화
+- **검증 모드**: 각 JIT 블록을 참조 인터프리터 실행과 레지스터·PC·PSTATE·메모리
+  단위로 대조 (개발 전용)
+- 검증 방식: 개발 호스트가 x86-64이므로 JIT가 생성한 ARM64 코드를 **aarch64
+  크로스 빌드 + qemu-user로 실제 실행**해 검증 (CI 포함). 인코딩은 GNU as 출력과
+  교차 검증
+- 호스트 단위 테스트 x86 109개 / aarch64(qemu) 126개 + 셀프테스트 47항목
+- Android 앱 (Jetpack Compose): 네이티브 엔진에서 게스트 ARM64 바이너리, 펌웨어
+  부팅, MMU 변환, JIT 실행을 수행하고 결과를 표시하는 개발 콘솔
 
 ## 빌드
 
@@ -62,6 +83,18 @@ cmake -S core -B build-host -G Ninja
 cmake --build build-host
 ./build-host/avm_tests      # 단위 테스트
 ./build-host/avm_selftest   # 게스트 바이너리 셀프테스트
+```
+
+JIT 실행 검증 (호스트가 ARM64가 아니면 크로스 빌드 + qemu):
+
+```bash
+sudo apt-get install -y g++-aarch64-linux-gnu qemu-user-static
+cmake -S core -B build-arm64 -G Ninja \
+  -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+  -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_FLAGS=-static
+cmake --build build-arm64
+qemu-aarch64-static ./build-arm64/avm_tests     # JIT를 실제 실행해 검증
+qemu-aarch64-static ./build-arm64/avm_selftest
 ```
 
 ### Android APK

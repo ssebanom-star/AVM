@@ -108,52 +108,21 @@ StopInfo Interpreter::RaiseSync(ExceptionClass ec, u32 iss, u64 far,
 
 bool Interpreter::DataAccess(u64 va, void* buf, unsigned size, bool is_store,
                              u64 pc, u32 raw, StopInfo& stop) {
+    u32 fsc = 0;
+    u64 fault_va = 0;
+    MemFaultKind kind = MemFaultKind::kPermission;
+    if (MemAccess(mmu_, mem_, cpu_, va, buf, size, is_store, fsc, fault_va,
+                  &kind)) {
+        return true;
+    }
     const bool from_el0 = cpu_.pstate.el == ExceptionLevel::EL0;
     const auto ec = from_el0 ? ExceptionClass::kDataAbortLower
                              : ExceptionClass::kDataAbort;
     const u32 wnr = is_store ? 1u << 6 : 0;
-
-    // SCTLR_EL1.A: 정렬 검사 활성 시 비정렬 접근은 정렬 폴트.
-    if ((cpu_.sys.sctlr_el1 & 2) && (va & (size - 1)) != 0) {
-        stop = RaiseSync(ec, wnr | fsc::kAlignment, va, pc,
-                         StopReason::kDataAbort, pc, raw);
-        stop.fault = MemFault{MemFaultKind::kPermission, va, is_store, false};
-        return false;
-    }
-
-    // 페이지 경계를 걸치는 비정렬 접근은 페이지별로 독립 변환한다
-    // (두 페이지가 물리적으로 불연속일 수 있으므로).
-    u8* cursor = static_cast<u8*>(buf);
-    u64 cur_va = va;
-    unsigned remaining = size;
-    const AccessType type = is_store ? AccessType::kStore : AccessType::kLoad;
-    while (remaining > 0) {
-        const unsigned in_page = static_cast<unsigned>(
-            kGuestPageSize - (cur_va & kGuestPageMask));
-        const unsigned chunk = remaining < in_page ? remaining : in_page;
-
-        u64 pa = cur_va;
-        MmuFault mmu_fault;
-        if (!mmu_.Translate(cur_va, type, mmu_fault, pa)) {
-            stop = RaiseSync(ec, wnr | mmu_fault.fsc, cur_va, pc,
-                             StopReason::kDataAbort, pc, raw);
-            stop.fault = MemFault{MemFaultKind::kPermission, cur_va, is_store,
-                                  false};
-            return false;
-        }
-        const MemFault fault = is_store ? mem_.Write(pa, cursor, chunk)
-                                        : mem_.Read(pa, cursor, chunk);
-        if (fault) {
-            stop = RaiseSync(ec, wnr | fsc::kSyncExternal, cur_va, pc,
-                             StopReason::kDataAbort, pc, raw);
-            stop.fault = fault;
-            return false;
-        }
-        cur_va += chunk;
-        cursor += chunk;
-        remaining -= chunk;
-    }
-    return true;
+    stop = RaiseSync(ec, wnr | fsc, fault_va, pc, StopReason::kDataAbort, pc,
+                     raw);
+    stop.fault = MemFault{kind, fault_va, is_store, false};
+    return false;
 }
 
 StopInfo Interpreter::Step() {

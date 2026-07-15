@@ -100,4 +100,13 @@ private:
     MmuStats stats_;
 };
 
+// 데이터 접근 공통 경로 (인터프리터와 JIT 헬퍼가 공유하여 의미가 일치함):
+//  - SCTLR.A 정렬 검사
+//  - 페이지 경계를 걸치는 접근의 페이지별 독립 변환
+//  - MMU 변환 -> 물리 읽기/쓰기
+// 성공 시 true. 실패 시 false + fsc(DFSC)와 fault_va를 채운다.
+bool MemAccess(Mmu& mmu, PhysMem& mem, const CpuState& cpu, u64 va, void* buf,
+               unsigned size, bool is_store, u32& fsc, u64& fault_va,
+               MemFaultKind* kind_out = nullptr);
+
 } // namespace avm
